@@ -16,6 +16,43 @@ import { z } from 'zod'
 import { logger } from '../logging.js'
 import { BaseAdapter } from './base.js'
 
+/**
+ * A custom tool class that extends DynamicStructuredTool to automatically
+ * unwrap the double-wrapped `input` parameter that can be erroneously
+ * produced by LLMs when a tool's output (a JSON string) is used as the
+ * input for a subsequent tool call.
+ */
+class MCPStructuredTool extends DynamicStructuredTool {
+  async call(
+    arg: Record<string, any> | string,
+    ...rest: any[]
+  ): Promise<string> {
+    let unwrappedArg = arg
+    // Check for the specific double-wrapping pattern: an object with a single
+    // key 'input' which is a stringified JSON.
+    if (
+      typeof arg === 'object'
+      && arg !== null
+      && Object.keys(arg).length === 1
+      && 'input' in arg
+      && typeof arg.input === 'string'
+    ) {
+      try {
+        // Attempt to parse the inner string. If successful, use the
+        // parsed object as the actual argument.
+        unwrappedArg = JSON.parse(arg.input)
+        logger.debug('Unwrapped tool input from:', arg)
+        logger.debug('Unwrapped tool input to:', unwrappedArg)
+      }
+      catch (e) {
+        // Not a valid JSON string, proceed with the original argument.
+        logger.debug('Input appeared double-wrapped, but failed to parse inner string.', e)
+      }
+    }
+    return super.call(unwrappedArg, ...rest)
+  }
+}
+
 function schemaToZod(schema: unknown): ZodTypeAny {
   try {
     return JSONSchemaToZod.convert(schema as JSONSchema)
@@ -91,7 +128,7 @@ export class LangChainAdapter extends BaseAdapter<StructuredToolInterface> {
       ? schemaToZod(mcpTool.inputSchema)
       : z.object({}).optional()
 
-    const tool = new DynamicStructuredTool({
+    const tool = new MCPStructuredTool({
       name: mcpTool.name ?? 'NO NAME',
       description: mcpTool.description ?? '', // Blank is acceptable but discouraged.
       schema: argsSchema,
